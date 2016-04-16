@@ -1,12 +1,13 @@
 (ns cb-proto.core
+  (:require-macros [cljs.core.async.macros :refer [go]])
   (:require [om.core :as om :include-macros true]
             [om.dom :as dom :include-macros true]
+            [goog.fs :as file]
+            [cljs.core.async :as async :refer [put! chan <!]]
             [clojure.data :as cd]
             [cb-proto.data :as data]))
 
 (enable-console-print!)
-
-(def chromolength36 [247249719, 242951149, 199501827, 191273063, 180857866, 170899992, 158821424, 146274826, 140273252, 135374737, 134452384, 132349534, 114142980, 106368585, 100338915, 88827254, 78774742, 76117153, 63811651, 62435964, 46944323, 49691432, 154913754])
 
 ;; Functions for parsing raw chromosome browser data from FTDNA
 (def dnakeys [:name :match :chromosome :start :end :length :snp])
@@ -16,7 +17,8 @@
   (map #(clojure.string/split % #"\"")
        (clojure.string/split string #"\r?\n|\r")))
 
-(def parsed-file (into [] (seq (rest (parse data/myfile)))))
+(defn vectorizeFile [file]
+  (into [] (seq (rest (parse file)))))
 
 (defn parse_numbers
   [s]
@@ -27,10 +29,8 @@
   (let [myvector (into [] (seq (flatten (vector (get arr 1) (get arr 3) (parse_numbers (get arr 4))))))]
     (zipmap dnakeys myvector)))
 
-(def parsed-kits (vec (map #(parse_array %) parsed-file)))
-
-(def first-parse
-  (map #(parse_array %) parsed-file))
+(defn first-parse [file]
+  (map #(parse_array %) (vectorizeFile file)))
 
 (defn keyify [s]
   (keyword (clojure.string/replace s #"\s+|,|/" "_")))
@@ -54,12 +54,14 @@
                  new-kits (assoc-in kits [name :username] (:name match))]
              (assoc-in new-kits [name chromosome] (add-match name chromosome match new-kits)))))))
 
-(def mykits (add-matches first-parse))
+(defn mykits [file]
+  (add-matches (first-parse file)))
+
 
 ;; --------------- AppData ------------------
 (def app-data
   (assoc {}
-    :kits mykits
+    :kits      (mykits data/demofile)
     :settings {
                :selectedChromosome "1"
                :selectedKitA       ""
@@ -78,6 +80,9 @@
               }))
 
 (defonce app-state (atom app-data))
+
+(defn state []
+  (om/ref-cursor (om/root-cursor app-state)))
 
 (defn kits []
   ;; Defines reference cursor to kits in appstate
@@ -103,7 +108,7 @@
 (defn data-scale []
   ;; Scales given chromosome to screensize
   (let [settings (settings)]
-    (/ (- (data-end) (data-start)) (get chromolength36 (- (js/parseInt (:selectedChromosome settings)) 1)))))
+    (/ (- (data-end) (data-start)) (get data/chromolength36 (- (js/parseInt (:selectedChromosome settings)) 1)))))
 
 (defn scale-to-browser [data]
   (* (js/parseInt data) (data-scale)))
@@ -333,6 +338,21 @@
           (= displaymode ":4") (display-option-4)
           :else (dom/div nil))))))
 
+(defn importFTDNACBdata [string]
+  (let [kits (kits)
+        state (state)
+        data (mykits string)
+        newmap (merge kits data)]
+    (om/transact! state :kits (fn [_] newmap))))
+
+(defn readfile [e]
+  (let [f (.. e -target -files)
+        myfile (js/FileReader. )]
+    (set! (.-onload myfile) (fn [e]
+                              (importFTDNACBdata (.-result myfile))))
+    (.readAsText myfile (aget f 0))))
+
+
 
 (defn chromosomeDisplay
   [_ owner]
@@ -340,6 +360,7 @@
     om/IRender
     (render [_]
       (dom/div nil
+               (dom/input #js {:type "file" :multipe "" :onChange #(readfile %)})
                (apply dom/select #js {:onChange #(putSetting % :selectedChromosome)}
                       (om/build-all select_option [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 "X"]))
                (apply dom/select #js {:onChange #(putSetting % :selectedFilter)}
